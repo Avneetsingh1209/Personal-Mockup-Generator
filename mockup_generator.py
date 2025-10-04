@@ -7,11 +7,11 @@ import cv2
 import os
 
 st.set_page_config(page_title="Shirt Mockup Generator", layout="centered")
-st.title("👕 Shirt Mockup Generator with Batching")
+st.title("👕 Shirt Mockup Generator with Realistic Blending")
 
 st.markdown("""
 Upload multiple design PNGs and shirt templates.  
-Preview placement, skew, and generate mockups in batches.
+Preview placement, skew, and generate **realistic mockups** in batches.
 """)
 
 # --- Sidebar Controls ---
@@ -41,7 +41,7 @@ design_files = st.file_uploader("📌 Upload Design Images", type=["png", "jpg",
 shirt_files = st.file_uploader("🎨 Upload Shirt Templates", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
 
 # --- Clear Button ---
-if st.button("🔄 Start Over (Clear Generated Mockups)"):
+if st.button("🔄 Start Over (Clear Generated Mockups)") :
     for key in ["design_files", "design_names", "zip_files_output"]:
         if key in st.session_state:
             del st.session_state[key]
@@ -53,7 +53,7 @@ if design_files:
     for i, file in enumerate(design_files):
         default_name = os.path.splitext(file.name)[0]
         custom_name = st.text_input(
-            f"Name for Design {i+1} ({file.name})", 
+            f"Name for Design {i+1} ({file.name})",
             value=st.session_state.design_names.get(file.name, default_name),
             key=f"name_input_{i}_{file.name}"
         )
@@ -84,10 +84,7 @@ def apply_skew(image, skew_x_deg=0, skew_y_deg=0):
     width, height = image.size
     skew_x = np.tan(np.radians(skew_x_deg))
     skew_y = np.tan(np.radians(skew_y_deg))
-
-    matrix = (1, skew_x, 0,
-              skew_y, 1, 0)
-
+    matrix = (1, skew_x, 0, skew_y, 1, 0)
     return image.transform(
         (width, height),
         Image.AFFINE,
@@ -95,6 +92,24 @@ def apply_skew(image, skew_x_deg=0, skew_y_deg=0):
         resample=Image.BICUBIC,
         fillcolor=(0, 0, 0, 0)
     )
+
+# --- Blending Function ---
+def blend_design_with_shirt(shirt, design, x, y):
+    """Blend design realistically with shirt using multiply blending"""
+    shirt_crop = shirt.crop((x, y, x + design.width, y + design.height)).convert("RGB")
+    design_rgb = design.convert("RGB")
+
+    # Convert to numpy
+    shirt_np = np.array(shirt_crop).astype(float) / 255.0
+    design_np = np.array(design_rgb).astype(float) / 255.0
+
+    # Multiply blend
+    blended_np = shirt_np * design_np
+
+    # Back to PIL
+    blended = Image.fromarray((blended_np * 255).astype(np.uint8))
+    shirt.paste(blended, (x, y), design)
+    return shirt
 
 # --- Live Preview ---
 if design_files and shirt_files:
@@ -136,7 +151,7 @@ if design_files and shirt_files:
             y = (shirt.height - design.height) // 2
 
         preview = shirt.copy()
-        preview.paste(resized_design, (x, y), resized_design)
+        preview = blend_design_with_shirt(preview, resized_design, x, y)
         st.image(preview, caption="📸 Live Mockup Preview", use_container_width=True)
     except Exception as e:
         st.error(f"⚠️ Preview failed: {e}")
@@ -186,7 +201,7 @@ if st.button("🚀 Generate Mockups for Selected Batch"):
                         y = (shirt.height - design.height) // 2
 
                     shirt_copy = shirt.copy()
-                    shirt_copy.paste(resized_design, (x, y), resized_design)
+                    shirt_copy = blend_design_with_shirt(shirt_copy, resized_design, x, y)
 
                     # Save directly into master ZIP
                     output_name = f"{graphic_name}_{color_name}_tee.png"
