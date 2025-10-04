@@ -11,7 +11,7 @@ st.title("👕 Shirt Mockup Generator with Batching")
 
 st.markdown("""
 Upload multiple design PNGs and shirt templates.  
-Preview placement and generate mockups in batches.
+Preview placement, skew, and generate mockups in batches.
 """)
 
 # --- Sidebar Controls ---
@@ -20,9 +20,15 @@ model_padding_ratio = st.sidebar.slider("Padding Ratio – Model Shirt", 0.1, 1.
 plain_offset_pct = st.sidebar.slider("Vertical Offset – Plain Shirt (%)", -50, 100, 23, 1)
 model_offset_pct = st.sidebar.slider("Vertical Offset – Model Shirt (%)", -50, 100, 38, 1)
 
-# ✅ NEW: Horizontal offsets
+# ✅ Horizontal offsets
 plain_horizontal_offset_pct = st.sidebar.slider("Horizontal Offset – Plain Shirt (%)", -50, 50, 0, 1)
 model_horizontal_offset_pct = st.sidebar.slider("Horizontal Offset – Model Shirt (%)", -50, 50, 0, 1)
+
+# ✅ Skew controls
+plain_skew_x = st.sidebar.slider("Horizontal Skew – Plain Shirt (°)", -30.0, 30.0, 0.0, 0.5)
+model_skew_x = st.sidebar.slider("Horizontal Skew – Model Shirt (°)", -30.0, 30.0, 0.0, 0.5)
+plain_skew_y = st.sidebar.slider("Vertical Skew – Plain Shirt (°)", -30.0, 30.0, 0.0, 0.5)
+model_skew_y = st.sidebar.slider("Vertical Skew – Model Shirt (°)", -30.0, 30.0, 0.0, 0.5)
 
 # --- Session Setup ---
 if "zip_files_output" not in st.session_state:
@@ -36,7 +42,6 @@ shirt_files = st.file_uploader("🎨 Upload Shirt Templates", type=["png", "jpg"
 
 # --- Clear Button ---
 if st.button("🔄 Start Over (Clear Generated Mockups)"):
-
     for key in ["design_files", "design_names", "zip_files_output"]:
         if key in st.session_state:
             del st.session_state[key]
@@ -74,6 +79,23 @@ def get_shirt_bbox(pil_image):
         return cv2.boundingRect(largest)
     return None
 
+# --- Skew Helper Function ---
+def apply_skew(image, skew_x_deg=0, skew_y_deg=0):
+    width, height = image.size
+    skew_x = np.tan(np.radians(skew_x_deg))
+    skew_y = np.tan(np.radians(skew_y_deg))
+
+    matrix = (1, skew_x, 0,
+              skew_y, 1, 0)
+
+    return image.transform(
+        (width, height),
+        Image.AFFINE,
+        matrix,
+        resample=Image.BICUBIC,
+        fillcolor=(0, 0, 0, 0)
+    )
+
 # --- Live Preview ---
 if design_files and shirt_files:
     st.markdown("### 👀 Live Preview")
@@ -89,9 +111,9 @@ if design_files and shirt_files:
         is_model = "model" in selected_shirt.name.lower()
         offset_pct = model_offset_pct if is_model else plain_offset_pct
         padding_ratio = model_padding_ratio if is_model else plain_padding_ratio
-
-        # ✅ Horizontal offset usage
         x_offset_pct = model_horizontal_offset_pct if is_model else plain_horizontal_offset_pct
+        skew_x_deg = model_skew_x if is_model else plain_skew_x
+        skew_y_deg = model_skew_y if is_model else plain_skew_y
 
         bbox = get_shirt_bbox(shirt)
         if bbox:
@@ -100,6 +122,10 @@ if design_files and shirt_files:
             new_width = int(design.width * scale)
             new_height = int(design.height * scale)
             resized_design = design.resize((new_width, new_height))
+
+            # ✅ Apply skew
+            resized_design = apply_skew(resized_design, skew_x_deg, skew_y_deg)
+
             y_offset = int(sh * offset_pct / 100)
             x_offset = int(sw * x_offset_pct / 100)
             x = sx + (sw - new_width) // 2 + x_offset
@@ -136,6 +162,8 @@ if st.button("🚀 Generate Mockups for Selected Batch"):
                     offset_pct = model_offset_pct if is_model else plain_offset_pct
                     padding_ratio = model_padding_ratio if is_model else plain_padding_ratio
                     x_offset_pct = model_horizontal_offset_pct if is_model else plain_horizontal_offset_pct
+                    skew_x_deg = model_skew_x if is_model else plain_skew_x
+                    skew_y_deg = model_skew_y if is_model else plain_skew_y
 
                     bbox = get_shirt_bbox(shirt)
                     if bbox:
@@ -144,6 +172,10 @@ if st.button("🚀 Generate Mockups for Selected Batch"):
                         new_width = int(design.width * scale)
                         new_height = int(design.height * scale)
                         resized_design = design.resize((new_width, new_height))
+
+                        # ✅ Apply skew before placement
+                        resized_design = apply_skew(resized_design, skew_x_deg, skew_y_deg)
+
                         y_offset = int(sh * offset_pct / 100)
                         x_offset = int(sw * x_offset_pct / 100)
                         x = sx + (sw - new_width) // 2 + x_offset
