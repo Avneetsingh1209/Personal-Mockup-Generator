@@ -7,11 +7,11 @@ import cv2
 import os
 
 st.set_page_config(page_title="Shirt Mockup Generator", layout="centered")
-st.title("👕 Shirt Mockup Generator with Realistic Blending")
+st.title("👕 Shirt Mockup Generator with Realistic Wrinkles")
 
 st.markdown("""
 Upload multiple design PNGs and shirt templates.  
-Preview placement, skew, and generate **realistic mockups** in batches.
+Preview placement, skew, wrinkle-warping, and generate **realistic mockups** in batches.
 """)
 
 # --- Sidebar Controls ---
@@ -29,6 +29,9 @@ plain_skew_x = st.sidebar.slider("Horizontal Skew – Plain Shirt (°)", -30.0, 
 model_skew_x = st.sidebar.slider("Horizontal Skew – Model Shirt (°)", -30.0, 30.0, 0.0, 0.5)
 plain_skew_y = st.sidebar.slider("Vertical Skew – Plain Shirt (°)", -30.0, 30.0, 0.0, 0.5)
 model_skew_y = st.sidebar.slider("Vertical Skew – Model Shirt (°)", -30.0, 30.0, 0.0, 0.5)
+
+# ✅ Wrinkle intensity
+wrinkle_intensity = st.sidebar.slider("Wrinkle Warp Intensity", 0, 20, 8, 1)
 
 # --- Session Setup ---
 if "zip_files_output" not in st.session_state:
@@ -93,21 +96,40 @@ def apply_skew(image, skew_x_deg=0, skew_y_deg=0):
         fillcolor=(0, 0, 0, 0)
     )
 
+# --- Displacement Map (Wrinkles) ---
+def apply_displacement_map(shirt, design, x, y, intensity=5):
+    """Warp design using shirt wrinkles"""
+    gray = np.array(shirt.convert("L")).astype(np.float32) / 255.0
+    h, w = design.size[1], design.size[0]
+    disp_crop = gray[y:y+h, x:x+w]
+
+    if disp_crop.shape != (h, w):
+        return design  # fail-safe
+
+    disp_x = (disp_crop - 0.5) * intensity
+    disp_y = (disp_crop - 0.5) * intensity
+
+    map_x, map_y = np.meshgrid(np.arange(w), np.arange(h))
+    map_x = (map_x + disp_x).astype(np.float32)
+    map_y = (map_y + disp_y).astype(np.float32)
+
+    design_np = np.array(design.convert("RGBA"))
+    warped = cv2.remap(design_np, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+
+    return Image.fromarray(warped, "RGBA")
+
 # --- Blending Function ---
 def blend_design_with_shirt(shirt, design, x, y):
     """Blend design realistically with shirt using multiply blending"""
     shirt_crop = shirt.crop((x, y, x + design.width, y + design.height)).convert("RGB")
     design_rgb = design.convert("RGB")
 
-    # Convert to numpy
     shirt_np = np.array(shirt_crop).astype(float) / 255.0
     design_np = np.array(design_rgb).astype(float) / 255.0
 
-    # Multiply blend
     blended_np = shirt_np * design_np
-
-    # Back to PIL
     blended = Image.fromarray((blended_np * 255).astype(np.uint8))
+
     shirt.paste(blended, (x, y), design)
     return shirt
 
@@ -138,7 +160,6 @@ if design_files and shirt_files:
             new_height = int(design.height * scale)
             resized_design = design.resize((new_width, new_height))
 
-            # ✅ Apply skew
             resized_design = apply_skew(resized_design, skew_x_deg, skew_y_deg)
 
             y_offset = int(sh * offset_pct / 100)
@@ -150,8 +171,11 @@ if design_files and shirt_files:
             x = (shirt.width - design.width) // 2
             y = (shirt.height - design.height) // 2
 
+        # ✅ Apply wrinkle warp
+        warped_design = apply_displacement_map(shirt, resized_design, x, y, intensity=wrinkle_intensity)
+
         preview = shirt.copy()
-        preview = blend_design_with_shirt(preview, resized_design, x, y)
+        preview = blend_design_with_shirt(preview, warped_design, x, y)
         st.image(preview, caption="📸 Live Mockup Preview", use_container_width=True)
     except Exception as e:
         st.error(f"⚠️ Preview failed: {e}")
@@ -188,7 +212,6 @@ if st.button("🚀 Generate Mockups for Selected Batch"):
                         new_height = int(design.height * scale)
                         resized_design = design.resize((new_width, new_height))
 
-                        # ✅ Apply skew before placement
                         resized_design = apply_skew(resized_design, skew_x_deg, skew_y_deg)
 
                         y_offset = int(sh * offset_pct / 100)
@@ -200,10 +223,12 @@ if st.button("🚀 Generate Mockups for Selected Batch"):
                         x = (shirt.width - design.width) // 2
                         y = (shirt.height - design.height) // 2
 
-                    shirt_copy = shirt.copy()
-                    shirt_copy = blend_design_with_shirt(shirt_copy, resized_design, x, y)
+                    # ✅ Apply wrinkle warp
+                    warped_design = apply_displacement_map(shirt, resized_design, x, y, intensity=wrinkle_intensity)
 
-                    # Save directly into master ZIP
+                    shirt_copy = shirt.copy()
+                    shirt_copy = blend_design_with_shirt(shirt_copy, warped_design, x, y)
+
                     output_name = f"{graphic_name}_{color_name}_tee.png"
                     img_byte_arr = io.BytesIO()
                     shirt_copy.save(img_byte_arr, format='PNG')
