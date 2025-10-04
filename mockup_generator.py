@@ -20,6 +20,10 @@ model_padding_ratio = st.sidebar.slider("Padding Ratio – Model Shirt", 0.1, 1.
 plain_offset_pct = st.sidebar.slider("Vertical Offset – Plain Shirt (%)", -50, 100, 23, 1)
 model_offset_pct = st.sidebar.slider("Vertical Offset – Model Shirt (%)", -50, 100, 38, 1)
 
+# ✅ NEW: Horizontal offsets
+plain_horizontal_offset_pct = st.sidebar.slider("Horizontal Offset – Plain Shirt (%)", -50, 50, 0, 1)
+model_horizontal_offset_pct = st.sidebar.slider("Horizontal Offset – Model Shirt (%)", -50, 50, 0, 1)
+
 # --- Session Setup ---
 if "zip_files_output" not in st.session_state:
     st.session_state.zip_files_output = {}
@@ -32,6 +36,7 @@ shirt_files = st.file_uploader("🎨 Upload Shirt Templates", type=["png", "jpg"
 
 # --- Clear Button ---
 if st.button("🔄 Start Over (Clear Generated Mockups)"):
+
     for key in ["design_files", "design_names", "zip_files_output"]:
         if key in st.session_state:
             del st.session_state[key]
@@ -85,6 +90,9 @@ if design_files and shirt_files:
         offset_pct = model_offset_pct if is_model else plain_offset_pct
         padding_ratio = model_padding_ratio if is_model else plain_padding_ratio
 
+        # ✅ Horizontal offset usage
+        x_offset_pct = model_horizontal_offset_pct if is_model else plain_horizontal_offset_pct
+
         bbox = get_shirt_bbox(shirt)
         if bbox:
             sx, sy, sw, sh = bbox
@@ -93,7 +101,8 @@ if design_files and shirt_files:
             new_height = int(design.height * scale)
             resized_design = design.resize((new_width, new_height))
             y_offset = int(sh * offset_pct / 100)
-            x = sx + (sw - new_width) // 2
+            x_offset = int(sw * x_offset_pct / 100)
+            x = sx + (sw - new_width) // 2 + x_offset
             y = sy + y_offset
         else:
             resized_design = design
@@ -126,6 +135,7 @@ if st.button("🚀 Generate Mockups for Selected Batch"):
                     is_model = "model" in shirt_file.name.lower()
                     offset_pct = model_offset_pct if is_model else plain_offset_pct
                     padding_ratio = model_padding_ratio if is_model else plain_padding_ratio
+                    x_offset_pct = model_horizontal_offset_pct if is_model else plain_horizontal_offset_pct
 
                     bbox = get_shirt_bbox(shirt)
                     if bbox:
@@ -135,7 +145,8 @@ if st.button("🚀 Generate Mockups for Selected Batch"):
                         new_height = int(design.height * scale)
                         resized_design = design.resize((new_width, new_height))
                         y_offset = int(sh * offset_pct / 100)
-                        x = sx + (sw - new_width) // 2
+                        x_offset = int(sw * x_offset_pct / 100)
+                        x = sx + (sw - new_width) // 2 + x_offset
                         y = sy + y_offset
                     else:
                         resized_design = design
