@@ -1,204 +1,148 @@
 import streamlit as st
-from PIL import Image
+from PIL import Image, ImageChops
 import numpy as np
+import cv2
 import zipfile
 import io
-import cv2
 import os
 
-st.set_page_config(page_title="Shirt Mockup Generator", layout="centered")
-st.title("👕 Shirt Mockup Generator with Batching")
+st.set_page_config(page_title="Realistic Shirt Mockup Generator", layout="centered")
+st.title("👕 Realistic Shirt Mockup Generator (Fabric Folds Enabled)")
 
-st.markdown("""
-Upload multiple design PNGs and shirt templates.  
-Preview placement, skew, and generate mockups in batches.
-""")
+# ---------------- SIDEBAR ----------------
+padding_ratio = st.sidebar.slider("Design Size", 0.1, 1.0, 0.45, 0.05)
+vertical_offset = st.sidebar.slider("Vertical Offset (%)", -50, 100, 30, 1)
+horizontal_offset = st.sidebar.slider("Horizontal Offset (%)", -50, 50, 0, 1)
+displacement_strength = st.sidebar.slider("Fabric Fold Strength", 0, 50, 20, 1)
 
-# --- Sidebar Controls ---
-plain_padding_ratio = st.sidebar.slider("Padding Ratio – Plain Shirt", 0.1, 1.0, 0.45, 0.05)
-model_padding_ratio = st.sidebar.slider("Padding Ratio – Model Shirt", 0.1, 1.0, 0.45, 0.05)
-plain_offset_pct = st.sidebar.slider("Vertical Offset – Plain Shirt (%)", -50, 100, 23, 1)
-model_offset_pct = st.sidebar.slider("Vertical Offset – Model Shirt (%)", -50, 100, 38, 1)
+# ---------------- UPLOAD ----------------
+design_files = st.file_uploader("Upload Design PNGs", type=["png"], accept_multiple_files=True)
+shirt_files = st.file_uploader("Upload Shirt Images", type=["png"], accept_multiple_files=True)
 
-# ✅ Horizontal offsets
-plain_horizontal_offset_pct = st.sidebar.slider("Horizontal Offset – Plain Shirt (%)", -50, 50, 0, 1)
-model_horizontal_offset_pct = st.sidebar.slider("Horizontal Offset – Model Shirt (%)", -50, 50, 0, 1)
+disp_file = st.file_uploader("Upload Displacement Map (Grayscale PNG)", type=["png"])
+texture_file = st.file_uploader("Upload Fabric Texture (Optional)", type=["png"])
 
-# ✅ Skew controls
-plain_skew_x = st.sidebar.slider("Horizontal Skew – Plain Shirt (°)", -30.0, 30.0, 0.0, 0.5)
-model_skew_x = st.sidebar.slider("Horizontal Skew – Model Shirt (°)", -30.0, 30.0, 0.0, 0.5)
-plain_skew_y = st.sidebar.slider("Vertical Skew – Plain Shirt (°)", -30.0, 30.0, 0.0, 0.5)
-model_skew_y = st.sidebar.slider("Vertical Skew – Model Shirt (°)", -30.0, 30.0, 0.0, 0.5)
-
-# --- Session Setup ---
-if "zip_files_output" not in st.session_state:
-    st.session_state.zip_files_output = {}
-if "design_names" not in st.session_state:
-    st.session_state.design_names = {}
-
-# --- Upload Section ---
-design_files = st.file_uploader("📌 Upload Design Images", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
-shirt_files = st.file_uploader("🎨 Upload Shirt Templates", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
-
-# --- Clear Button ---
-if st.button("🔄 Start Over (Clear Generated Mockups)"):
-    for key in ["design_files", "design_names", "zip_files_output"]:
-        if key in st.session_state:
-            del st.session_state[key]
-    st.rerun()
-
-# --- Design Naming ---
-if design_files:
-    st.markdown("### ✏️ Name Each Design")
-    for i, file in enumerate(design_files):
-        default_name = os.path.splitext(file.name)[0]
-        custom_name = st.text_input(
-            f"Name for Design {i+1} ({file.name})", 
-            value=st.session_state.design_names.get(file.name, default_name),
-            key=f"name_input_{i}_{file.name}"
-        )
-        st.session_state.design_names[file.name] = custom_name
-
-# --- Batch Controls ---
-if design_files:
-    st.markdown("### 📦 Batch Processing Control")
-    total_designs = len(design_files)
-    batch_start = st.number_input("Start from Design #", min_value=1, max_value=total_designs, value=1)
-    batch_end = st.number_input("End at Design #", min_value=batch_start, max_value=total_designs, value=min(batch_start + 19, total_designs))
-    selected_batch = design_files[batch_start - 1: batch_end]
-
-# --- Bounding Box Detection ---
+# ---------------- FUNCTIONS ----------------
 def get_shirt_bbox(pil_image):
-    img_cv = np.array(pil_image.convert("RGB"))[:, :, ::-1]
-    gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    _, thresh = cv2.threshold(blurred, 240, 255, cv2.THRESH_BINARY_INV)
+    img = np.array(pil_image.convert("RGB"))
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    _, thresh = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if contours:
-        largest = max(contours, key=cv2.contourArea)
-        return cv2.boundingRect(largest)
+        return cv2.boundingRect(max(contours, key=cv2.contourArea))
     return None
 
-# --- Skew Helper Function ---
-def apply_skew(image, skew_x_deg=0, skew_y_deg=0):
-    width, height = image.size
-    skew_x = np.tan(np.radians(skew_x_deg))
-    skew_y = np.tan(np.radians(skew_y_deg))
 
-    matrix = (1, skew_x, 0,
-              skew_y, 1, 0)
+def apply_displacement(design, disp_map, strength):
+    design_np = np.array(design)
+    disp = np.array(disp_map.convert("L"))
 
-    return image.transform(
-        (width, height),
-        Image.AFFINE,
-        matrix,
-        resample=Image.BICUBIC,
-        fillcolor=(0, 0, 0, 0)
+    h, w = disp.shape
+    dx = (disp / 255.0 - 0.5) * strength
+    dy = dx
+
+    map_x, map_y = np.meshgrid(np.arange(w), np.arange(h))
+    map_x = (map_x + dx).astype(np.float32)
+    map_y = (map_y + dy).astype(np.float32)
+
+    warped = cv2.remap(
+        design_np,
+        map_x,
+        map_y,
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_TRANSPARENT
     )
 
-# --- Live Preview ---
-if design_files and shirt_files:
-    st.markdown("### 👀 Live Preview")
-    selected_design = st.selectbox("Select a Design", design_files, format_func=lambda x: x.name)
-    selected_shirt = st.selectbox("Select a Shirt Template", shirt_files, format_func=lambda x: x.name)
+    return Image.fromarray(warped, "RGBA")
 
-    try:
-        selected_design.seek(0)
-        design = Image.open(selected_design).convert("RGBA")
-        selected_shirt.seek(0)
-        shirt = Image.open(selected_shirt).convert("RGBA")
 
-        is_model = "model" in selected_shirt.name.lower()
-        offset_pct = model_offset_pct if is_model else plain_offset_pct
-        padding_ratio = model_padding_ratio if is_model else plain_padding_ratio
-        x_offset_pct = model_horizontal_offset_pct if is_model else plain_horizontal_offset_pct
-        skew_x_deg = model_skew_x if is_model else plain_skew_x
-        skew_y_deg = model_skew_y if is_model else plain_skew_y
+def blend_with_texture(design, texture):
+    texture = texture.resize(design.size).convert("RGBA")
+    return ImageChops.multiply(design, texture)
 
-        bbox = get_shirt_bbox(shirt)
-        if bbox:
-            sx, sy, sw, sh = bbox
-            scale = min(sw / design.width, sh / design.height, 1.0) * padding_ratio
-            new_width = int(design.width * scale)
-            new_height = int(design.height * scale)
-            resized_design = design.resize((new_width, new_height))
 
-            # ✅ Apply skew
-            resized_design = apply_skew(resized_design, skew_x_deg, skew_y_deg)
+def apply_shadows(design, shirt):
+    shadows = shirt.convert("L").resize(design.size)
+    shadows = Image.merge("RGBA", (shadows, shadows, shadows, shadows))
+    return ImageChops.multiply(design, shadows)
 
-            y_offset = int(sh * offset_pct / 100)
-            x_offset = int(sw * x_offset_pct / 100)
-            x = sx + (sw - new_width) // 2 + x_offset
-            y = sy + y_offset
-        else:
-            resized_design = design
-            x = (shirt.width - design.width) // 2
-            y = (shirt.height - design.height) // 2
+# ---------------- PREVIEW ----------------
+if design_files and shirt_files and disp_file:
+    design = Image.open(design_files[0]).convert("RGBA")
+    shirt = Image.open(shirt_files[0]).convert("RGBA")
+    disp_map = Image.open(disp_file)
+
+    bbox = get_shirt_bbox(shirt)
+    if bbox:
+        sx, sy, sw, sh = bbox
+        scale = min(sw / design.width, sh / design.height) * padding_ratio
+        new_size = (int(design.width * scale), int(design.height * scale))
+        design = design.resize(new_size)
+
+        design = apply_displacement(design, disp_map.resize(new_size), displacement_strength)
+
+        if texture_file:
+            texture = Image.open(texture_file)
+            design = blend_with_texture(design, texture)
+
+        design = apply_shadows(design, shirt)
+
+        x = sx + (sw - design.width) // 2 + int(sw * horizontal_offset / 100)
+        y = sy + int(sh * vertical_offset / 100)
 
         preview = shirt.copy()
-        preview.paste(resized_design, (x, y), resized_design)
-        st.image(preview, caption="📸 Live Mockup Preview", use_container_width=True)
-    except Exception as e:
-        st.error(f"⚠️ Preview failed: {e}")
+        preview.paste(design, (x, y), design)
 
-# --- Generate Mockups ---
-if st.button("🚀 Generate Mockups for Selected Batch"):
-    if not (selected_batch and shirt_files):
-        st.warning("Upload at least one design and one shirt template.")
+        st.image(preview, caption="Live Realistic Preview", use_container_width=True)
+
+# ---------------- GENERATE ----------------
+if st.button("🚀 Generate Realistic Mockups"):
+    if not (design_files and shirt_files and disp_file):
+        st.warning("Upload designs, shirts, and a displacement map.")
     else:
-        master_zip = io.BytesIO()
-        with zipfile.ZipFile(master_zip, "w", zipfile.ZIP_DEFLATED) as zipf:
-            for design_file in selected_batch:
-                graphic_name = st.session_state.design_names.get(design_file.name, "graphic")
-                design_file.seek(0)
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zipf:
+            disp_map = Image.open(disp_file)
+
+            for design_file in design_files:
                 design = Image.open(design_file).convert("RGBA")
 
                 for shirt_file in shirt_files:
-                    color_name = os.path.splitext(shirt_file.name)[0]
-                    shirt_file.seek(0)
                     shirt = Image.open(shirt_file).convert("RGBA")
-
-                    is_model = "model" in shirt_file.name.lower()
-                    offset_pct = model_offset_pct if is_model else plain_offset_pct
-                    padding_ratio = model_padding_ratio if is_model else plain_padding_ratio
-                    x_offset_pct = model_horizontal_offset_pct if is_model else plain_horizontal_offset_pct
-                    skew_x_deg = model_skew_x if is_model else plain_skew_x
-                    skew_y_deg = model_skew_y if is_model else plain_skew_y
-
                     bbox = get_shirt_bbox(shirt)
-                    if bbox:
-                        sx, sy, sw, sh = bbox
-                        scale = min(sw / design.width, sh / design.height, 1.0) * padding_ratio
-                        new_width = int(design.width * scale)
-                        new_height = int(design.height * scale)
-                        resized_design = design.resize((new_width, new_height))
+                    if not bbox:
+                        continue
 
-                        # ✅ Apply skew before placement
-                        resized_design = apply_skew(resized_design, skew_x_deg, skew_y_deg)
+                    sx, sy, sw, sh = bbox
+                    scale = min(sw / design.width, sh / design.height) * padding_ratio
+                    new_size = (int(design.width * scale), int(design.height * scale))
+                    d = design.resize(new_size)
 
-                        y_offset = int(sh * offset_pct / 100)
-                        x_offset = int(sw * x_offset_pct / 100)
-                        x = sx + (sw - new_width) // 2 + x_offset
-                        y = sy + y_offset
-                    else:
-                        resized_design = design
-                        x = (shirt.width - design.width) // 2
-                        y = (shirt.height - design.height) // 2
+                    d = apply_displacement(d, disp_map.resize(new_size), displacement_strength)
 
-                    shirt_copy = shirt.copy()
-                    shirt_copy.paste(resized_design, (x, y), resized_design)
+                    if texture_file:
+                        texture = Image.open(texture_file)
+                        d = blend_with_texture(d, texture)
 
-                    # Save directly into master ZIP
-                    output_name = f"{graphic_name}_{color_name}_tee.png"
-                    img_byte_arr = io.BytesIO()
-                    shirt_copy.save(img_byte_arr, format='PNG')
-                    img_byte_arr.seek(0)
-                    zipf.writestr(output_name, img_byte_arr.getvalue())
+                    d = apply_shadows(d, shirt)
 
-        master_zip.seek(0)
+                    x = sx + (sw - d.width) // 2
+                    y = sy + int(sh * vertical_offset / 100)
+
+                    result = shirt.copy()
+                    result.paste(d, (x, y), d)
+
+                    img_bytes = io.BytesIO()
+                    result.save(img_bytes, format="PNG")
+                    zipf.writestr(
+                        f"{os.path.splitext(design_file.name)[0]}_{shirt_file.name}",
+                        img_bytes.getvalue()
+                    )
+
+        zip_buffer.seek(0)
         st.download_button(
-            label="📦 Download All Mockups",
-            data=master_zip,
-            file_name="all_mockups.zip",
-            mime="application/zip"
+            "📦 Download Mockups",
+            zip_buffer,
+            "realistic_mockups.zip",
+            "application/zip"
         )
